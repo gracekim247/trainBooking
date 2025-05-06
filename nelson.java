@@ -1,7 +1,7 @@
 import java.sql.*;
 
 public class nelson {
-    private Connection connection;
+    public Connection connection;
     // Constructor to establish database connection
     public nelson() {
         try {
