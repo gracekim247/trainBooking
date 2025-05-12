@@ -16,7 +16,7 @@ public class TrainBookingDatabase
          Class.forName("org.sqlite.JDBC");
 
          // Connect to the database
-         connection = DriverManager.getConnection("jdbc:sqlite:train_booking.db");
+         connection = DriverManager.getConnection("jdbc:sqlite:train_booking copy.db");
          System.out.println("Connected to database successfully!");
      } catch (ClassNotFoundException e) {
          System.err.println("SQLite JDBC driver not found: " + e.getMessage());
@@ -112,29 +112,60 @@ public class TrainBookingDatabase
       }
    }
 
-   public void createBooking(int ticketID, int bookingID, String bookDate, int seatNum, int confirmed, int waiting, int invalid, int passengerID) {
-      String sql = "INSERT INTO Booking (ticketID, bookingID, bookDate, seatNum, confirmed, waiting, invalid, passengerID) " +
-                   "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
-      try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
-         pstmt.setInt(1, ticketID);
-          pstmt.setInt(2, bookingID);
-          pstmt.setString(3, bookDate);
-          pstmt.setInt(4, seatNum);
-          pstmt.setInt(5, confirmed);
-          pstmt.setInt(6, waiting);
-          pstmt.setInt(7, invalid);
-          pstmt.setInt(8, passengerID);
-  
-          pstmt.executeUpdate();
-          System.out.println("Booking created");
-      } catch (SQLException e) {
-          System.err.println("Error: " + e.getMessage());
-      }
-   }
+    public Integer createBooking(int bookingID, String bookDate, int seatNum, int confirmed, int waiting, int invalid, int passengerID) throws SQLException {
+        if (confirmed != 1) {
+            String noTicketSql = """
+                INSERT INTO Booking
+                (bookingID, bookDate, seatNum, confirmed, waiting, invalid, passengerID)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """;
+            try (PreparedStatement p = connection.prepareStatement(noTicketSql)) {
+                p.setInt(1, bookingID);
+                p.setString(2, bookDate);
+                p.setInt(3, seatNum);
+                p.setInt(4, confirmed);
+                p.setInt(5, waiting);
+                p.setInt(6, invalid);
+                p.setInt(7, passengerID);
+                p.executeUpdate();
+            }
+            return null;
+        }
+        else{
+            String sql = """
+                INSERT INTO Booking
+                (bookingID, bookDate, seatNum, confirmed, waiting, invalid, passengerID)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """;
+            try (PreparedStatement p = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+                p.setInt(1, bookingID);
+                p.setString(2, bookDate);
+                p.setInt(3, seatNum);
+                p.setInt(4, confirmed);
+                p.setInt(5, waiting);
+                p.setInt(6, invalid);
+                p.setInt(7, passengerID);
 
-   public void createTicket(int ticketID, int bookingID, int trainID, String travelDate, int print, int electronic) {
+                int affected = p.executeUpdate();
+                if (affected == 0) {
+                    throw new SQLException("Creating booking failed, no rows affected.");
+                }
+
+                try (ResultSet rs = p.getGeneratedKeys()) {
+                    if (rs.next()) {
+                        int newTicketID = rs.getInt(1);
+                        return newTicketID;
+                    } else {
+                        throw new SQLException("Creating booking failed, no ticketID obtained.");
+                    }
+                }
+            }
+        }
+    }   
+
+   public void createTicket(int ticketID, int bookingID, /*int trainID,*/ String travelDate, int print, int electronic) {
       String selectSQL = "SELECT seatNum FROM Booking WHERE bookingID = ? AND confirmed = 1";
-      String insertSQL = "INSERT INTO Ticket (ticketID, print, electronic, trainID, travelDate, seatNum) VALUES (?, ?, ?, ?, ?, ?)";
+      String insertSQL = "INSERT INTO Ticket (ticketID, print, electronic, travelDate, seatNum) VALUES (?, ?, ?, ?, ?)";
   
       try (
           PreparedStatement selectStmt = connection.prepareStatement(selectSQL);
@@ -149,43 +180,80 @@ public class TrainBookingDatabase
                   insertStmt.setInt(1, ticketID);
                   insertStmt.setInt(2, print);
                   insertStmt.setInt(3, electronic);
-                  insertStmt.setInt(4, trainID);
-                  insertStmt.setString(5, travelDate);
-                  insertStmt.setInt(6, seatNum);
+                  insertStmt.setString(4, travelDate);
+                  insertStmt.setInt(5, seatNum);
   
                   insertStmt.executeUpdate();
-                  System.out.println("Ticket created");
               }
   
-          } else {
-              System.out.println("Ticket not created");
-          }
+          } 
   
       } catch (SQLException e) {
           System.err.println("Error creating ticket: " + e.getMessage());
       }
-   }
+    }
+    public void updateBookingWithTicket(int bookingID, int ticketID) throws SQLException {
+        String sql = """
+        UPDATE Booking
+            SET ticketID = ?
+        WHERE bookingID = ?
+        """;
 
-   public void deleteBooking(int ticketID, int bookingID, int passengerID){
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setInt(1, ticketID);
+            ps.setInt(2, bookingID);
+            if (ps.executeUpdate() == 0) {
+                throw new SQLException("No Booking found for bookingID=" + bookingID);
+            }
+        }
+    }
+
+
+   public void bookAndIssueTicket(int bookingID,String bookDate,int seatNum,int confirmed,int waiting,int invalid,int passengerID,int trainID,String travelDate,int print,int electronic) throws SQLException {
+        connection.setAutoCommit(false);
+        try {
+            Integer ticketID = createBooking(
+                bookingID, bookDate, seatNum,
+                confirmed, waiting, invalid, passengerID
+            );
+
+            if (ticketID != null) {
+                createTicket(
+                    ticketID,
+                    bookingID,
+                    travelDate,
+                    print,
+                    electronic
+                );
+                updateBookingWithTicket(bookingID, ticketID);
+                
+            } 
+            System.out.println("Booking created.");
+
+            connection.commit();
+        } catch (SQLException ex) {
+            connection.rollback();
+            throw ex;
+        } finally {
+            connection.setAutoCommit(true);
+        }
+    }
+
+   public void deleteBooking(int bookingID, int passengerID){
       String sql =
          "DELETE FROM Booking "
-         + "WHERE ticketID   = ? "
-         + "  AND bookingID  = ? "
+         + "WHERE bookingID  = ? "
          + "  AND passengerID = ?;";
 
       try(PreparedStatement stmt = connection.prepareStatement(sql)) {
-         stmt.setInt(1, ticketID);
-         stmt.setInt(2, bookingID);
-         stmt.setInt(3, passengerID);
+         stmt.setInt(1, bookingID);
+         stmt.setInt(2, passengerID);
 
          int affected = stmt.executeUpdate();
          if (affected > 0) {
                System.out.println("Booking cancelled successfully.");
          } else {
-               System.out.printf(
-                  "No booking found for ticket %d, booking %d, passenger %d.%n",
-                  ticketID, bookingID, passengerID
-               );
+               System.out.println("No such booking found.");
          }
       } catch (SQLException e) {
          System.err.println("Error cancelling booking: " + e.getMessage());
@@ -193,32 +261,9 @@ public class TrainBookingDatabase
      }
    }
 
-   public void deleteBookingWithoutTicket(int bookingID, int passengerID) {
-      String lookup = 
-         "SELECT ticketID FROM Booking "
-         + "WHERE bookingID = ? AND passengerID = ?";
-
-      try(PreparedStatement ps = connection.prepareStatement(lookup)){ 
-         ps.setInt(1, bookingID);
-         ps.setInt(2, passengerID);
-         ResultSet rs = ps.executeQuery();
-
-         if (!rs.next()) {
-            System.out.println("No such booking found.");
-            return;
-         }
-
-         int ticketID = rs.getInt("ticketID");
-         deleteBooking(ticketID, bookingID, passengerID);
-      } catch (SQLException e) {
-         System.err.println("Error looking up booking: " + e.getMessage());
-         e.printStackTrace();
-     }
-   }
-
    public void generateReport(int passengerID) {
       String sql = "SELECT p.first_name, p.last_name, b.bookingID, b.bookDate, b.seatNum, " +
-                   "t.trainID, t.travelDate, b.confirmed, b.waiting, b.invalid " +
+                   "t.trainID, t.travelDate, b.confirmed, b.waiting, b.invalid, b.ticketID " +
                    "FROM Passenger p " +
                    "JOIN Booking b ON p.passengerID = b.passengerID " +
                    "JOIN Ticket t ON b.ticketID = t.ticketID " +
@@ -228,7 +273,6 @@ public class TrainBookingDatabase
          stmt.setInt(1, passengerID);
          ResultSet rs = stmt.executeQuery();
 
-         //matching rows?
          boolean found = false;
          
          String first = rs.getString("first_name");
@@ -246,14 +290,15 @@ public class TrainBookingDatabase
             else if (rs.getInt("invalid") == 1) status = "Invalid";
 
             //need to add destination
-            System.out.println("trainID: " + rs.getInt("trainID") +
-                              ", seat #: " + rs.getInt("seatNum") +
+            System.out.println("ticketID: " + rs.getInt("ticketID") +
                               ", booking ID #: " + rs.getInt("bookingID") +
-                              ", booking status: " + status);
+                              ", booking status: " + status +
+                              ", seat #: " + rs.getInt("seatNum") +
+                              ", travel date: " + rs.getString("travelDate"));
          }
 
          if (!found) {
-            System.out.println(first + last + "has not booked any flights.");
+            System.out.println("No flights booked.");
          }
 
    } catch (SQLException e) {
@@ -263,7 +308,9 @@ public class TrainBookingDatabase
 
    public static void main(String[] args){
       TrainBookingDatabase db = new TrainBookingDatabase();
+
       try (Scanner scanner = new Scanner(System.in)){
+        System.out.println("===");
          while(true){
             System.out.println("Train Booking System:");
             System.out.println("  1. Add Passenger Profile");
@@ -273,41 +320,39 @@ public class TrainBookingDatabase
             System.out.println("  5. Generate Ticket Report");
             System.out.println("  6. Exit");
 
-            System.out.print("Enter your choice: ");
+            System.out.print("\nEnter your choice: ");
 
             int ans = scanner.nextInt();
             scanner.nextLine();
 
             switch (ans){
-               case 1:
-                  System.out.print("Enter passenger's ID number: ");
-                  int pID = scanner.nextInt();
-                  scanner.nextLine();
-                  System.out.print("Enter passenger's first name: ");
-                  String firstName = scanner.nextLine();
-                  System.out.print("Enter passenger's last name: ");
-                  String lastName = scanner.nextLine();
-                  System.out.print("Enter passenger's sex (M/F): ");
-                  char sex = scanner.nextLine().charAt(0);
-                  System.out.print("Enter passenger's age: ");
-                  // int age = scanner.nextInt();
-                  // scanner.nextLine();
-                  String age = scanner.nextLine();
-                  int intAge = Integer.parseInt(age);
-                  System.out.print("Enter passenger's address: ");
-                  String address = scanner.nextLine();
-                  
-                  System.out.println();
-                  System.out.println("===");
+                case 1:
+                    System.out.print("Enter passenger's ID number: ");
+                    int pID = scanner.nextInt();
+                    scanner.nextLine();
+                    System.out.print("Enter passenger's first name: ");
+                    String firstName = scanner.nextLine();
+                    System.out.print("Enter passenger's last name: ");
+                    String lastName = scanner.nextLine();
+                    System.out.print("Enter passenger's sex (M/F): ");
+                    char sex = scanner.nextLine().charAt(0);
+                    System.out.print("Enter passenger's age: ");
+                    String age = scanner.nextLine();
+                    int intAge = Integer.parseInt(age);
+                    System.out.print("Enter passenger's address: ");
+                    String address = scanner.nextLine();
+                    
+                    System.out.println("===");
 
-
-                  db.createPassenger(pID, firstName, lastName, sex, intAge, address);
-                  break;
+                    db.createPassenger(pID, firstName, lastName, sex, intAge, address);
+                    System.out.println("===\n");
+                    break;
 
                case 2:
-                  // 2
                   System.out.print("Enter today's date (MM-DD-YY): ");
                   String bookingDate = scanner.nextLine();
+                  System.out.print("Enter travel date (MM-DD-YY): ");
+                  String travelDate = scanner.nextLine();
                   System.out.print("Enter booking ID number: ");
                   int bID = scanner.nextInt();
                   scanner.nextLine();
@@ -325,10 +370,10 @@ public class TrainBookingDatabase
                   scanner.nextLine();
                   System.out.print("Enter if invalid (0/1): ");
                   int invalid = scanner.nextInt();
-                  scanner.nextLine();
                   System.out.println("===");
 
-                  db.createBooking(1, bID, bookingDate, seatNum, confirmed, waiting, invalid, cBpID);
+                  db.bookAndIssueTicket(bID, bookingDate, seatNum, confirmed, waiting, invalid, cBpID, 1, travelDate, 0, 1);
+                  System.out.println("===\n");
                   break;
 
                case 3:
@@ -344,6 +389,7 @@ public class TrainBookingDatabase
                   } else{
                      db.invalidBooking(bookingID);
                   }
+                  System.out.println("===\n");
                   break;
 
                case 4:
@@ -355,7 +401,8 @@ public class TrainBookingDatabase
                   scanner.nextLine();
                   System.out.println("===");
 
-                  db.deleteBookingWithoutTicket(newbID, uppID);
+                  db.deleteBooking(newbID, uppID);
+                  System.out.println("===\n");
                   break;
                   
                case 5:
@@ -365,6 +412,7 @@ public class TrainBookingDatabase
                   System.out.println("===");
 
                   db.generateReport(cpID);
+                  System.out.println("===\n");
                   break;
 
                case 6:
